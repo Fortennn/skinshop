@@ -12,6 +12,12 @@
 /build
 /dist
 
+# backend data
+/server/data
+*.db
+*.db-shm
+*.db-wal
+
 # misc
 .DS_Store
 .env

@@ -1,380 +1,310 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
-import { jwtDecode } from 'jwt-decode';
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import { api, ApiError } from '../api/client';
 
 const AuthContext = createContext(null);
 
+/**
+ * AuthContext is now backed by the Express + SQLite API. All mutations
+ * round-trip through the server, which holds the source of truth for
+ * users, cart, inventory, and history.
+ *
+ * Successful mutation handlers return { success: boolean, message: string }
+ * — same contract as before, so existing call sites don't need to change.
+ */
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [cart, setCart] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-
-  useEffect(() => {
-    const savedUser = localStorage.getItem('user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    } else {
-      // Check if user is logged in via Steam
-      checkSteamAuth();
-    }
-    
-    // Initialize users list if not exists
-    if (!localStorage.getItem('users')) {
-      localStorage.setItem('users', JSON.stringify([]));
+  // ---- Loaders ------------------------------------------------------------
+  const refreshCart = useCallback(async () => {
+    try {
+      const { cart } = await api.getCart();
+      setCart(cart || []);
+    } catch {
+      setCart([]);
     }
   }, []);
 
-  const checkSteamAuth = async () => {
+  const refreshInventory = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/auth/user', {
-        credentials: 'include'
-      });
-      const steamUser = await response.json();
-      
-      if (steamUser) {
-        const userData = {
-          name: steamUser.displayName,
-          email: steamUser.id + '@steam', // Steam doesn't provide email, use ID as placeholder
-          picture: steamUser.photos[2]?.value || steamUser.photos[0]?.value,
-          balance: 150.00,
-          inventory: [],
-          history: [],
-          memberSince: new Date().toLocaleDateString(),
-          isSteam: true
-        };
+      const { inventory } = await api.getInventory();
+      setInventory(inventory || []);
+    } catch {
+      setInventory([]);
+    }
+  }, []);
 
-        // Standard user sync logic
-        const users = JSON.parse(localStorage.getItem('users') || '[]');
-        const existingUser = users.find(u => u.email === userData.email);
-        if (!existingUser) {
-          users.push({ ...userData, password: null });
-          localStorage.setItem('users', JSON.stringify(users));
-        } else {
-          userData.balance = existingUser.balance;
-          userData.inventory = existingUser.inventory;
-          userData.history = existingUser.history;
-          userData.memberSince = existingUser.memberSince;
+  const refreshHistory = useCallback(async () => {
+    try {
+      const { history } = await api.getHistory();
+      setHistory(history || []);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([refreshCart(), refreshInventory(), refreshHistory()]);
+  }, [refreshCart, refreshInventory, refreshHistory]);
+
+  // Boot: check current session
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { user } = await api.me();
+        if (!cancelled) {
+          setUser(user || null);
+          if (user) {
+            await refreshAll();
+          }
         }
-
-        setUser(userData);
-        localStorage.setItem('user', JSON.stringify(userData));
+      } catch {
+        // fall through
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    } catch (error) {
-      console.error('Steam auth check failed:', error);
-    }
-  };
-
-  const login = (credentialResponse) => {
-    const decoded = jwtDecode(credentialResponse.credential);
-    const userData = {
-      name: decoded.name,
-      email: decoded.email,
-      picture: decoded.picture,
-      balance: 150.00,
-      inventory: [],
-      history: [],
-      memberSince: new Date().toLocaleDateString()
+    })();
+    return () => {
+      cancelled = true;
     };
+  }, [refreshAll]);
 
-    // Save to local users list if new
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    const existingUser = users.find(u => u.email === userData.email);
-    if (!existingUser) {
-      users.push({ ...userData, password: null }); // Google users have no password
-      localStorage.setItem('users', JSON.stringify(users));
-    } else {
-      // Preserve existing data if user already exists
-      userData.balance = existingUser.balance;
-      userData.inventory = existingUser.inventory;
-      userData.history = existingUser.history;
-      userData.memberSince = existingUser.memberSince;
+  // ---- Auth actions -------------------------------------------------------
+  const wrap = async (fn) => {
+    try {
+      const data = await fn();
+      return { success: true, data };
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Network error';
+      return { success: false, message };
     }
-
-    setUser(userData);
-    localStorage.setItem('user', JSON.stringify(userData));
   };
 
-  const loginWithEmail = (email, password) => {
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    const userMatch = users.find(u => u.email === email && u.password === password);
-    
-    if (userMatch) {
-      const { password: _, ...userData } = userMatch;
-      setUser(userData);
-      localStorage.setItem('user', JSON.stringify(userData));
+  const register = async (name, email, password) => {
+    const r = await wrap(() => api.register({ name, email, password }));
+    if (r.success) {
+      setUser(r.data.user);
+      await refreshAll();
+      return { success: true, message: 'Welcome aboard!' };
+    }
+    return { success: false, message: r.message };
+  };
+
+  const loginWithEmail = async (email, password) => {
+    const r = await wrap(() => api.login({ email, password }));
+    if (r.success) {
+      setUser(r.data.user);
+      await refreshAll();
       return { success: true };
     }
-    return { success: false, message: 'Invalid email or password' };
+    return { success: false, message: r.message };
   };
 
-  const register = (name, email, password) => {
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    if (users.find(u => u.email === email)) {
-      return { success: false, message: 'User already exists' };
+  // Google OAuth via @react-oauth/google -> sends credential to backend
+  const login = async (credentialResponse) => {
+    if (!credentialResponse?.credential) return { success: false, message: 'No credential' };
+    const r = await wrap(() => api.loginGoogle(credentialResponse.credential));
+    if (r.success) {
+      setUser(r.data.user);
+      await refreshAll();
+      return { success: true };
     }
-
-    const newUser = {
-      name,
-      email,
-      password,
-      picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
-      balance: 150.00,
-      inventory: [],
-      history: [],
-      memberSince: new Date().toLocaleDateString()
-    };
-
-    users.push(newUser);
-    localStorage.setItem('users', JSON.stringify(users));
-
-    const { password: _, ...userData } = newUser;
-    setUser(userData);
-    localStorage.setItem('user', JSON.stringify(userData));
-    return { success: true };
+    return { success: false, message: r.message };
   };
 
-  const logout = () => {
-    if (user?.isSteam) {
-      window.location.href = 'http://localhost:5000/auth/logout';
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // ignore — clear local state anyway
     }
     setUser(null);
     setCart([]);
-    localStorage.removeItem('user');
+    setInventory([]);
+    setHistory([]);
   };
 
-  const updateUserInStorage = (updatedUser) => {
-    // Update active session
-    localStorage.setItem('user', JSON.stringify(updatedUser));
-    
-    // Update in "database"
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    const index = users.findIndex(u => u.email === updatedUser.email);
-    if (index !== -1) {
-      users[index] = { ...users[index], ...updatedUser };
-      localStorage.setItem('users', JSON.stringify(users));
+  const updateProfile = async (payload) => {
+    const r = await wrap(() => api.updateProfile(payload));
+    if (r.success) {
+      setUser(r.data.user);
+      return { success: true };
+    }
+    return { success: false, message: r.message };
+  };
+
+  // ---- Cart actions -------------------------------------------------------
+  const addToCart = async (item, quantity = 1) => {
+    if (!user) return { success: false, message: 'Please login first' };
+    const r = await wrap(() => api.addToCart(item.id, quantity));
+    if (r.success) {
+      setCart(r.data.cart || []);
+      return { success: true, message: 'Added to cart!' };
+    }
+    return { success: false, message: r.message };
+  };
+
+  const updateCartQuantity = async (itemId, quantity) => {
+    if (!user) return;
+    try {
+      const { cart } = await api.updateCartQty(itemId, quantity);
+      setCart(cart || []);
+    } catch {
+      // refresh state from server on failure
+      await refreshCart();
     }
   };
 
-  // Cart Management
-  const addToCart = (item, quantity = 1) => {
-    if (!user) return { success: false, message: 'Please login first' };
-    
-    setCart(prev => {
-      const existingItem = prev.find(cartItem => cartItem.id === item.id);
-      if (existingItem) {
-        return prev.map(cartItem => 
-          cartItem.id === item.id 
-            ? { ...cartItem, quantity: (cartItem.quantity || 1) + quantity }
-            : cartItem
-        );
-      }
-      return [...prev, { ...item, quantity }];
-    });
-    return { success: true, message: 'Added to cart!' };
-  };
-
-  const updateCartQuantity = (itemId, quantity) => {
-    if (quantity <= 0) {
-      removeFromCart(itemId);
-      return;
+  const removeFromCart = async (itemId) => {
+    if (!user) return;
+    try {
+      const { cart } = await api.removeFromCart(itemId);
+      setCart(cart || []);
+    } catch {
+      await refreshCart();
     }
-    setCart(prev => prev.map(item => 
-      item.id === itemId ? { ...item, quantity } : item
-    ));
   };
 
-  const removeFromCart = (itemId) => {
-    setCart(prev => prev.filter(item => item.id !== itemId));
+  const clearCart = async () => {
+    if (!user) return;
+    try {
+      const { cart } = await api.clearCart();
+      setCart(cart || []);
+    } catch {
+      await refreshCart();
+    }
   };
 
-  const clearCart = () => {
-    setCart([]);
-  };
-
-  // Balance Top-up
-  const topUpBalance = (amount) => {
-    if (!user) return { success: false, message: 'Please login first' };
-    if (amount <= 0 || isNaN(amount)) return { success: false, message: 'Invalid amount' };
-
-    const updatedUser = {
-      ...user,
-      balance: (user.balance || 0) + amount,
-      history: [
-        {
-          id: Date.now(),
-          type: 'Top Up',
-          item: 'Demo Balance Credit',
-          date: new Date().toISOString().split('T')[0],
-          amount: `+${amount.toFixed(2)}`
-        },
-        ...(user.history || [])
-      ]
-    };
-
-    setUser(updatedUser);
-    updateUserInStorage(updatedUser);
-    return { success: true, message: `Successfully topped up $${amount.toFixed(2)}!` };
-  };
-
-  // Checkout Shopping Cart items
-  const checkoutCart = () => {
+  const checkoutCart = async () => {
     if (!user) return { success: false, message: 'Please login first' };
     if (cart.length === 0) return { success: false, message: 'Your cart is empty!' };
-
-    const totalPrice = cart.reduce((sum, item) => sum + item.price * (item.quantity || 1), 0);
-    if (user.balance < totalPrice) {
-      return { success: false, message: 'Insufficient balance. Top up to complete purchase.' };
+    const r = await wrap(() => api.checkoutCart());
+    if (r.success) {
+      setUser(r.data.user);
+      setCart(r.data.cart || []);
+      await Promise.all([refreshInventory(), refreshHistory()]);
+      return { success: true, message: `Successfully purchased ${r.data.totalItems} skins!` };
     }
-
-    const currentInventory = user.inventory || [];
-    const currentHistory = user.history || [];
-    
-    // Add purchase timestamp to items and expand by quantity
-    const newItems = [];
-    cart.forEach((item, itemIdx) => {
-      const qty = item.quantity || 1;
-      for (let i = 0; i < qty; i++) {
-        // Create a copy without the quantity property for inventory
-        const { quantity, ...itemData } = item;
-        newItems.push({
-          ...itemData,
-          purchaseId: Date.now() + (itemIdx * 1000) + i
-        });
-      }
-    });
-
-    // Create history records
-    const newHistoryRecords = cart.map((item, index) => ({
-      id: Date.now() + index + 1000,
-      type: 'Purchase',
-      item: `${item.name}${item.quantity > 1 ? ` (x${item.quantity})` : ''}`,
-      date: new Date().toISOString().split('T')[0],
-      amount: `-${(item.price * (item.quantity || 1)).toFixed(2)}`
-    }));
-
-    const updatedUser = {
-      ...user,
-      balance: (user.balance || 0) - totalPrice,
-      inventory: [...currentInventory, ...newItems],
-      history: [...newHistoryRecords, ...currentHistory]
-    };
-
-    setUser(updatedUser);
-    updateUserInStorage(updatedUser);
-    setCart([]); // Clear cart on success
-
-    return { success: true, message: `Successfully purchased ${newItems.length} skins!` };
+    return { success: false, message: r.message };
   };
 
-  const buyItem = (item, isFree = false) => {
+  // ---- Wallet / inventory -------------------------------------------------
+  const topUpBalance = async (amount) => {
     if (!user) return { success: false, message: 'Please login first' };
-    
-    const priceToDeduct = isFree ? 0 : item.price;
-    if (user.balance < priceToDeduct) return { success: false, message: 'Insufficient balance' };
-
-    const currentInventory = user.inventory || [];
-    const currentHistory = user.history || [];
-
-    const updatedUser = {
-      ...user,
-      balance: (user.balance || 0) - priceToDeduct,
-      inventory: [...currentInventory, { ...item, purchaseId: Date.now() }],
-      history: [
-        { 
-          id: Date.now(), 
-          type: isFree ? 'Upgrade Win' : 'Purchase', 
-          item: item.name, 
-          date: new Date().toISOString().split('T')[0], 
-          amount: isFree ? '0.00' : `-${item.price.toFixed(2)}` 
-        },
-        ...currentHistory
-      ]
-    };
-
-    setUser(updatedUser);
-    updateUserInStorage(updatedUser);
-    return { success: true, message: isFree ? 'Upgrade successful!' : 'Purchase successful!' };
-  };
-
-  const sellItem = (purchaseId) => {
-    if (!user) return { success: false, message: 'Please login first' };
-    
-    const itemToSell = user.inventory.find(item => item.purchaseId === purchaseId);
-    if (!itemToSell) return { success: false, message: 'Item not found in inventory' };
-
-    const updatedInventory = user.inventory.filter(item => item.purchaseId !== purchaseId);
-    const updatedUser = {
-      ...user,
-      balance: (user.balance || 0) + itemToSell.price,
-      inventory: updatedInventory,
-      history: [
-        { 
-          id: Date.now(), 
-          type: 'Sale', 
-          item: itemToSell.name, 
-          date: new Date().toISOString().split('T')[0], 
-          amount: `+${itemToSell.price.toFixed(2)}` 
-        },
-        ...user.history
-      ]
-    };
-
-    setUser(updatedUser);
-    updateUserInStorage(updatedUser);
-    return { success: true, message: 'Item sold successfully!' };
-  };
-
-  const applyUpgrade = (sourcePurchaseId, targetItem, isWin, extraCost = 0) => {
-    if (!user) return { success: false, message: 'Please login first' };
-    if (user.balance < extraCost) return { success: false, message: 'Insufficient balance' };
-
-    const sourceItem = user.inventory.find(item => item.purchaseId === sourcePurchaseId);
-    if (!sourceItem) return { success: false, message: 'Source item not found' };
-
-    const updatedInventory = user.inventory.filter(item => item.purchaseId !== sourcePurchaseId);
-    
-    if (isWin) {
-      updatedInventory.push({ ...targetItem, purchaseId: Date.now() });
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { success: false, message: 'Invalid amount' };
     }
+    const r = await wrap(() => api.topUp(n));
+    if (r.success) {
+      setUser(r.data.user);
+      await refreshHistory();
+      return { success: true, message: `Successfully topped up $${n.toFixed(2)}!` };
+    }
+    return { success: false, message: r.message };
+  };
 
-    const historyRecord = {
-      id: Date.now(),
-      type: isWin ? 'Upgrade Win' : 'Upgrade Loss',
-      item: isWin ? `${sourceItem.name} -> ${targetItem.name}` : sourceItem.name,
-      date: new Date().toISOString().split('T')[0],
-      amount: extraCost > 0 ? `-${extraCost.toFixed(2)}` : '0.00'
-    };
+  const sellItem = async (purchaseId) => {
+    if (!user) return { success: false, message: 'Please login first' };
+    const r = await wrap(() => api.sellItems([purchaseId]));
+    if (r.success) {
+      setUser(r.data.user);
+      setInventory(r.data.inventory || []);
+      await refreshHistory();
+      return { success: true, message: 'Item sold successfully!' };
+    }
+    return { success: false, message: r.message };
+  };
 
-    const updatedUser = {
-      ...user,
-      balance: user.balance - extraCost,
-      inventory: updatedInventory,
-      history: [historyRecord, ...user.history]
-    };
+  const sellItems = async (purchaseIds) => {
+    if (!user) return { success: false, message: 'Please login first' };
+    if (!purchaseIds?.length) return { success: false, message: 'Select at least one item' };
+    const r = await wrap(() => api.sellItems(purchaseIds));
+    if (r.success) {
+      setUser(r.data.user);
+      setInventory(r.data.inventory || []);
+      await refreshHistory();
+      return {
+        success: true,
+        message: `Sold ${r.data.soldCount} items for $${r.data.soldValue.toFixed(2)}`,
+      };
+    }
+    return { success: false, message: r.message };
+  };
 
-    setUser(updatedUser);
-    updateUserInStorage(updatedUser);
+  // Kept for compatibility with the Upgrader. `targetItem` is the skin
+  // record from the catalog (must include `id`).
+  const applyUpgrade = async (sourcePurchaseId, targetItem, isWin, extraCost = 0) => {
+    if (!user) return { success: false, message: 'Please login first' };
+    const r = await wrap(() =>
+      api.upgradeItem({
+        sourcePurchaseId,
+        targetSkinId: targetItem?.id,
+        isWin: !!isWin,
+        extraCost: Number(extraCost) || 0,
+      })
+    );
+    if (r.success) {
+      setUser(r.data.user);
+      setInventory(r.data.inventory || []);
+      await refreshHistory();
+      return { success: true, message: isWin ? 'Upgrade Successful!' : 'Upgrade Failed' };
+    }
+    return { success: false, message: r.message };
+  };
 
-    return { success: true, message: isWin ? 'Upgrade Successful!' : 'Upgrade Failed' };
+  // `buyItem` retained for Upgrader's free-grant path. For a normal purchase,
+  // prefer using the cart + checkoutCart flow.
+  const buyItem = async (item, isFree = false) => {
+    if (!user) return { success: false, message: 'Please login first' };
+    if (isFree) {
+      // Treat as a zero-cost upgrade win: there's no real "source" item, so
+      // surface a clear error and ask the caller to use a real flow.
+      return { success: false, message: 'Free-grant flow is no longer supported on the client' };
+    }
+    // Buy via cart-as-single
+    const add = await addToCart(item, 1);
+    if (!add.success) return add;
+    return await checkoutCart();
   };
 
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      cart, 
-      login, 
-      loginWithEmail, 
-      register, 
-      logout, 
-      addToCart, 
-      updateCartQuantity,
-      removeFromCart, 
-      clearCart, 
-      topUpBalance, 
-      checkoutCart, 
-      buyItem, 
-      sellItem,
-      applyUpgrade
-    }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        cart,
+        inventory,
+        history,
+        loading,
+        // auth
+        login,
+        loginWithEmail,
+        register,
+        logout,
+        updateProfile,
+        // cart
+        addToCart,
+        updateCartQuantity,
+        removeFromCart,
+        clearCart,
+        checkoutCart,
+        // wallet / inventory / upgrade
+        topUpBalance,
+        sellItem,
+        sellItems,
+        buyItem,
+        applyUpgrade,
+        // refreshers
+        refreshAll,
+        refreshCart,
+        refreshInventory,
+        refreshHistory,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

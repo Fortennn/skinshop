@@ -1,24 +1,27 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
+import { useToast } from '../context/ToastContext';
+import { api } from '../api/client';
 import SkinCard from '../components/skins/SkinCard';
 import SkinInspectorModal from '../components/skins/SkinInspectorModal';
 import skinsData from '../data/skins.json';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Search, SlidersHorizontal, RefreshCw, Sparkles, CheckCircle2, 
-  AlertCircle, ShoppingCart, Grid, Flame, Shield, Crosshair, 
-  Target, Zap, ChevronDown, Check, X 
+import {
+  Search, SlidersHorizontal, RefreshCw, Sparkles,
+  ShoppingCart, Grid, Flame, Shield, Crosshair,
+  Target, Zap, ChevronDown, Check, X
 } from 'lucide-react';
 
 const Shop = () => {
   const { user, addToCart, cart } = useAuth();
   const { formatPrice } = useCurrency();
+  const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [category, setCategory] = useState('All');
   const [sortBy, setSortBy] = useState('price-high'); // Default sorted from expensive to cheap
-  const [isLoading, setIsLoading] = useState(false);
-  const [toast, setToast] = useState({ show: false, success: true, message: '' });
+  const [isLoading, setIsLoading] = useState(true);
+  const [skins, setSkins] = useState(skinsData);
   const [inspectedSkin, setInspectedSkin] = useState(null); // Skin detail modal trigger
   const [isSortOpen, setIsSortOpen] = useState(false);
 
@@ -32,30 +35,38 @@ const Shop = () => {
     { value: 'SMG', label: 'SMGs' }
   ];
 
+  // Pull catalog from backend, fall back to bundled JSON if the server is down.
   useEffect(() => {
-    setIsLoading(true);
-    const timer = setTimeout(() => setIsLoading(false), 400); // simulation timing
-    return () => clearTimeout(timer);
-  }, [searchTerm, category, sortBy]);
+    let cancelled = false;
+    (async () => {
+      setIsLoading(true);
+      try {
+        const { skins } = await api.listSkins({ limit: 500 });
+        if (!cancelled && skins?.length) setSkins(skins);
+      } catch {
+        // keep bundled fallback
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-  const handleAddToCart = (skin) => {
-    const res = addToCart(skin);
+  const handleAddToCart = async (skin) => {
+    if (!user) {
+      toast.error('Please sign in to add items to the cart');
+      return;
+    }
+    const res = await addToCart(skin);
     if (res.success) {
-      showToast(true, res.message);
+      toast.success(`Added ${skin.name} to cart`);
     } else {
-      showToast(false, res.message);
+      toast.error(res.message || 'Failed to add to cart');
     }
   };
 
-  const showToast = (success, message) => {
-    setToast({ show: true, success, message });
-    setTimeout(() => {
-      setToast(prev => ({ ...prev, show: false }));
-    }, 3000);
-  };
-
   const filteredSkins = useMemo(() => {
-    let result = [...skinsData];
+    let result = [...skins];
 
     // Search filter
     if (searchTerm) {
@@ -87,47 +98,17 @@ const Shop = () => {
     }
 
     return result;
-  }, [searchTerm, category, sortBy]);
+  }, [searchTerm, category, sortBy, skins]);
 
   const skeletonCards = Array.from({ length: 8 });
 
   return (
     <div className="flex flex-col gap-8 pb-16 relative">
-      
-      {/* Toast Notification with Next-Gen Glow overlays */}
-      <AnimatePresence>
-        {toast.show && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20, x: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, x: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            className={`fixed top-6 right-6 z-[200] flex items-center gap-3.5 px-6 py-4 rounded-2xl border shadow-[0_0_35px_rgba(0,0,0,0.6)] backdrop-blur-xl max-w-sm ${
-              toast.success 
-                ? 'bg-emerald-950/85 border-emerald-500/25 text-emerald-300' 
-                : 'bg-red-950/85 border-red-500/25 text-red-300'
-            }`}
-          >
-            {toast.success ? (
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-            ) : (
-              <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
-            )}
-            <div className="flex flex-col text-left">
-              <span className="text-xs font-black uppercase tracking-widest">
-                {toast.success ? 'Inventory Update' : 'Cart Alert'}
-              </span>
-              <span className="text-[11px] text-gray-300 mt-0.5 font-semibold">{toast.message}</span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Skin Inspector Overlay Detail Modal */}
-      <SkinInspectorModal 
+      <SkinInspectorModal
         item={inspectedSkin}
         isOpen={!!inspectedSkin}
         onClose={() => setInspectedSkin(null)}
-        onAddedToCart={(msg) => showToast(true, msg)}
       />
 
       {/* Header Section */}

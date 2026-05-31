@@ -3,56 +3,62 @@ import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { X, Trash2, CreditCard, ShoppingBag, PlusCircle, CheckCircle, AlertCircle, Minus, Plus } from 'lucide-react';
+import { useToast } from '../../context/ToastContext';
+import { X, Trash2, CreditCard, ShoppingBag, PlusCircle, CheckCircle, AlertCircle, Minus, Plus, Loader2 } from 'lucide-react';
 
 const CartDrawer = ({ isOpen, onClose }) => {
   const { user, cart, removeFromCart, updateCartQuantity, checkoutCart, topUpBalance } = useAuth();
   const { formatPrice } = useCurrency();
+  const toast = useToast();
   const [showTopUp, setShowTopUp] = useState(false);
   const [topUpAmount, setTopUpAmount] = useState('');
-  const [toast, setToast] = useState({ message: '', isError: false });
+  const [busy, setBusy] = useState(false);
 
   const totalPrice = cart.reduce((sum, item) => sum + item.price * (item.quantity || 1), 0);
   const hasFunds = user && user.balance >= totalPrice;
 
-  const triggerToast = (msg, isError = false) => {
-    setToast({ message: msg, isError });
-    setTimeout(() => setToast({ message: '', isError: false }), 2500);
-  };
-
-  const handleCheckout = () => {
-    const res = checkoutCart();
+  const handleCheckout = async () => {
+    if (busy) return;
+    setBusy(true);
+    const res = await checkoutCart();
+    setBusy(false);
     if (res.success) {
-      triggerToast("Purchase Successful!");
-      setTimeout(onClose, 800);
+      toast.success(res.message || 'Purchase complete!');
+      setTimeout(onClose, 600);
     } else {
-      triggerToast(res.message, true);
+      toast.error(res.message || 'Checkout failed');
     }
   };
 
-  const handleTopUpPreset = (amount) => {
-    const res = topUpBalance(amount);
+  const handleTopUpPreset = async (amount) => {
+    if (busy) return;
+    setBusy(true);
+    const res = await topUpBalance(amount);
+    setBusy(false);
     if (res && res.success) {
-      triggerToast(`Credited +${formatPrice(amount)}`);
+      toast.success(`Credited +${formatPrice(amount)}`);
     } else {
-      triggerToast(res?.message || "Top-up failed", true);
+      toast.error(res?.message || 'Top-up failed');
     }
   };
 
-  const handleCustomTopUp = (e) => {
+  const handleCustomTopUp = async (e) => {
     e.preventDefault();
     const amount = parseFloat(topUpAmount);
     if (isNaN(amount) || amount <= 0) {
-      triggerToast("Enter valid amount", true);
+      toast.error('Enter a valid amount');
       return;
     }
-    const res = topUpBalance(amount);
+    if (busy) return;
+    setBusy(true);
+    const res = await topUpBalance(amount);
+    setBusy(false);
     if (res && res.success) {
-      triggerToast(`Credited +${formatPrice(amount)}`);
+      toast.success(`Credited +${formatPrice(amount)}`);
       setTopUpAmount('');
       setShowTopUp(false);
     } else {
-      triggerToast(res?.message || "Top-up failed", true);
+      toast.error(res?.message || 'Top-up failed');
     }
   };
 
@@ -93,18 +99,6 @@ const CartDrawer = ({ isOpen, onClose }) => {
                 <X className="w-4 h-4" />
               </button>
             </div>
-
-            {/* Cart Toast Banner */}
-            {toast.message && (
-              <div className={`absolute top-16 left-6 right-6 z-20 flex items-center justify-center p-3.5 rounded-xl border text-xs font-bold gap-2 shadow-lg backdrop-blur-md ${
-                toast.isError
-                  ? 'bg-red-950/90 border-red-500/25 text-red-400'
-                  : 'bg-emerald-950/90 border-emerald-500/20 text-emerald-400'
-              }`}>
-                {toast.isError ? <AlertCircle className="w-4.5 h-4.5" /> : <CheckCircle className="w-4.5 h-4.5" />}
-                <span>{toast.message}</span>
-              </div>
-            )}
 
             {/* Scrollable list */}
             <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
@@ -245,15 +239,15 @@ const CartDrawer = ({ isOpen, onClose }) => {
 
                 <button
                   onClick={handleCheckout}
-                  disabled={!user || !hasFunds}
+                  disabled={!user || !hasFunds || busy}
                   className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
-                    !hasFunds || !user
+                    !hasFunds || !user || busy
                       ? 'bg-white/5 border border-white/5 text-gray-500 cursor-not-allowed'
                       : 'bg-gradient-to-r from-accent-cyan to-accent-blue text-dark-950 hover-glow cursor-pointer active:scale-98 shadow-xl'
                   }`}
                 >
-                  <CreditCard className="w-4 h-4" />
-                  <span>Complete Purchase</span>
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+                  <span>{busy ? 'Processing…' : 'Complete Purchase'}</span>
                 </button>
               </div>
             )}

@@ -2,12 +2,15 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { X, ShoppingCart, Info, TrendingUp, ShieldAlert, Award, Minus, Plus } from 'lucide-react';
+import { useToast } from '../../context/ToastContext';
+import { X, ShoppingCart, Info, TrendingUp, ShieldAlert, Award, Minus, Plus, Loader2 } from 'lucide-react';
 
 const SkinInspectorModal = ({ item, isOpen, onClose, onAddedToCart }) => {
   const { user, addToCart, cart } = useAuth();
   const { formatPrice } = useCurrency();
+  const toast = useToast();
   const [quantity, setQuantity] = React.useState(1);
+  const [busy, setBusy] = React.useState(false);
 
   if (!item || !isOpen) return null;
 
@@ -46,11 +49,21 @@ const SkinInspectorModal = ({ item, isOpen, onClose, onAddedToCart }) => {
 
   const weaponStats = getStats(item.type);
 
-  const handleAddToCart = () => {
-    const res = addToCart(item, quantity);
-    if (res.success && onAddedToCart) {
-      onAddedToCart(res.message);
+  const handleAddToCart = async () => {
+    if (!user) {
+      toast.error('Please sign in first');
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    const res = await addToCart(item, quantity);
+    setBusy(false);
+    if (res.success) {
+      toast.success(`Added ${quantity}x ${item.name} to cart`);
+      onAddedToCart?.(res.message);
       onClose();
+    } else {
+      toast.error(res.message || 'Failed to add to cart');
     }
   };
 

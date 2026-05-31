@@ -215,7 +215,7 @@ const CanvasParticles = ({ active }) => {
 // 3. MAIN COMPONENT
 // ============================================================================
 const Upgrader = () => {
-  const { user, applyUpgrade } = useAuth();
+  const { user, applyUpgrade, inventory } = useAuth();
   const { formatPrice } = useCurrency();
 
   // Selection states
@@ -293,11 +293,11 @@ const Upgrader = () => {
 
   // Filters for inventory items
   const filteredInventoryItems = useMemo(() => {
-    if (!user?.inventory) return [];
-    return user.inventory
+    if (!inventory) return [];
+    return inventory
       .filter(item => item.name.toLowerCase().includes(inventorySearchQuery.toLowerCase()))
       .sort((a, b) => b.price - a.price);
-  }, [user?.inventory, inventorySearchQuery]);
+  }, [inventory, inventorySearchQuery]);
 
   // Filters for shop items
   const availableShopItems = useMemo(() => {
@@ -412,13 +412,13 @@ const Upgrader = () => {
     });
   };
 
-  const handleUpgradeSuccess = () => {
-    applyUpgrade(selectedInventoryItem.purchaseId, selectedShopItem, true, addedBalance);
+  const handleUpgradeSuccess = async () => {
+    await applyUpgrade(selectedInventoryItem.purchaseId, selectedShopItem, true, addedBalance);
     setSelectedInventoryItem(null);
   };
 
-  const handleUpgradeFailure = () => {
-    applyUpgrade(selectedInventoryItem.purchaseId, selectedShopItem, false, addedBalance);
+  const handleUpgradeFailure = async () => {
+    await applyUpgrade(selectedInventoryItem.purchaseId, selectedShopItem, false, addedBalance);
     setSelectedInventoryItem(null);
   };
 

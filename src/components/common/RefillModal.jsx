@@ -2,25 +2,26 @@ import React, { useState } from 'react';
 import Modal from './Modal';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { Wallet, CheckCircle2, AlertCircle } from 'lucide-react';
+import { useToast } from '../../context/ToastContext';
+import { Wallet, Loader2 } from 'lucide-react';
 
 const RefillModal = ({ isOpen, onClose }) => {
   const { topUpBalance, user } = useAuth();
   const { formatPrice } = useCurrency();
+  const toast = useToast();
   const [amount, setAmount] = useState('');
-  const [toast, setToast] = useState({ show: false, message: '', isError: false });
+  const [busy, setBusy] = useState(false);
 
-  const showToastMsg = (msg, isError = false) => {
-    setToast({ show: true, message: msg, isError });
-    setTimeout(() => setToast({ show: false, message: '', isError: false }), 2500);
-  };
-
-  const handlePresetRefill = (value) => {
-    const res = topUpBalance(value);
+  const doTopUp = async (value) => {
+    if (busy) return;
+    setBusy(true);
+    const res = await topUpBalance(value);
+    setBusy(false);
     if (res && res.success) {
-      showToastMsg(`Successfully added +${formatPrice(value)}!`);
+      toast.success(`Credited +${formatPrice(value)}`);
+      setAmount('');
     } else {
-      showToastMsg(res?.message || 'Top-up failed', true);
+      toast.error(res?.message || 'Top-up failed');
     }
   };
 
@@ -28,32 +29,15 @@ const RefillModal = ({ isOpen, onClose }) => {
     e.preventDefault();
     const val = parseFloat(amount);
     if (isNaN(val) || val <= 0) {
-      showToastMsg('Please enter a valid amount', true);
+      toast.error('Please enter a valid amount');
       return;
     }
-    const res = topUpBalance(val);
-    if (res && res.success) {
-      showToastMsg(`Successfully added +${formatPrice(val)}!`);
-      setAmount('');
-    } else {
-      showToastMsg(res?.message || 'Top-up failed', true);
-    }
+    doTopUp(val);
   };
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Refill Wallet Balance">
-      <div className="flex flex-col gap-5 text-left font-sans relative">
-        {toast.show && (
-          <div className={`absolute -top-3 left-0 right-0 z-30 flex items-center justify-center p-3 rounded-xl border text-xs font-bold gap-2 shadow-lg backdrop-blur-md ${
-            toast.isError
-              ? 'bg-red-950/90 border-red-500/25 text-red-400'
-              : 'bg-emerald-950/90 border-emerald-500/20 text-emerald-400'
-          }`}>
-            {toast.isError ? <AlertCircle className="w-4.5 h-4.5" /> : <CheckCircle2 className="w-4.5 h-4.5" />}
-            <span>{toast.message}</span>
-          </div>
-        )}
-
+      <div className="flex flex-col gap-5 text-left font-sans">
         <div className="flex items-center gap-3 bg-white/5 border border-white/5 p-4 rounded-xl">
           <Wallet className="w-5 h-5 text-accent-cyan" />
           <div className="flex flex-col">
@@ -68,8 +52,9 @@ const RefillModal = ({ isOpen, onClose }) => {
             {[50, 100, 250, 500].map(val => (
               <button
                 key={val}
-                onClick={() => handlePresetRefill(val)}
-                className="py-2.5 rounded-xl border border-white/5 bg-white/5 hover:border-accent-cyan/40 hover:bg-accent-cyan/5 text-xs font-bold text-gray-200 hover:text-white transition-all active:scale-95 cursor-pointer"
+                disabled={busy}
+                onClick={() => doTopUp(val)}
+                className="py-2.5 rounded-xl border border-white/5 bg-white/5 hover:border-accent-cyan/40 hover:bg-accent-cyan/5 text-xs font-bold text-gray-200 hover:text-white transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 +{formatPrice(val)}
               </button>
@@ -80,7 +65,7 @@ const RefillModal = ({ isOpen, onClose }) => {
         <form onSubmit={handleCustomRefill} className="flex flex-col gap-2 border-t border-white/5 pt-4">
           <label className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Or Enter Custom Amount</label>
           <div className="flex gap-2">
-            <input 
+            <input
               type="number"
               placeholder="e.g. 100"
               value={amount}
@@ -89,8 +74,10 @@ const RefillModal = ({ isOpen, onClose }) => {
             />
             <button
               type="submit"
-              className="px-6 py-2.5 bg-accent-cyan text-dark-950 font-extrabold text-xs uppercase tracking-widest rounded-xl transition-all hover:scale-98 active:scale-95 cursor-pointer shadow-lg hover:shadow-cyan-500/20"
+              disabled={busy}
+              className="px-6 py-2.5 bg-accent-cyan text-dark-950 font-extrabold text-xs uppercase tracking-widest rounded-xl transition-all hover:scale-98 active:scale-95 cursor-pointer shadow-lg hover:shadow-cyan-500/20 disabled:opacity-50 flex items-center gap-2"
             >
+              {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
               Add Funds
             </button>
           </div>

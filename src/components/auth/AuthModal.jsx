@@ -1,32 +1,52 @@
 import React, { useState } from 'react';
 import { GoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import Modal from '../common/Modal';
-import { User, Mail, Lock, ShieldAlert } from 'lucide-react';
+import { User, Mail, Lock, ShieldAlert, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const AuthModal = ({ isOpen, onClose }) => {
   const { login, loginWithEmail, register } = useAuth();
+  const toast = useToast();
   const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (isLogin) {
-      const result = loginWithEmail(formData.email, formData.password);
-      if (result.success) { onClose(); } else { setError(result.message); }
-    } else {
-      if (!formData.name) return setError('Name is required');
-      const result = register(formData.name, formData.email, formData.password);
-      if (result.success) { onClose(); } else { setError(result.message); }
+    setBusy(true);
+    try {
+      let result;
+      if (isLogin) {
+        result = await loginWithEmail(formData.email, formData.password);
+      } else {
+        if (!formData.name) { setError('Name is required'); return; }
+        result = await register(formData.name, formData.email, formData.password);
+      }
+      if (result.success) {
+        toast.success(isLogin ? 'Signed in.' : 'Account created.');
+        onClose();
+      } else {
+        setError(result.message);
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleGoogleSuccess = (response) => {
-    login(response);
-    onClose();
+  const handleGoogleSuccess = async (response) => {
+    setBusy(true);
+    const result = await login(response);
+    setBusy(false);
+    if (result?.success) {
+      toast.success('Signed in with Google.');
+      onClose();
+    } else {
+      setError(result?.message || 'Google sign-in failed');
+    }
   };
 
   return (
@@ -153,7 +173,7 @@ const AuthModal = ({ isOpen, onClose }) => {
                 color: '#000000',
               }}
             >
-              {isLogin ? 'Authenticate Session' : 'Register Account'}
+              {busy ? <Loader2 className="inline w-4 h-4 animate-spin" /> : isLogin ? 'Authenticate Session' : 'Register Account'}
             </motion.button>
           </form>
         </motion.div>
@@ -184,7 +204,7 @@ const AuthModal = ({ isOpen, onClose }) => {
 
         {/* Steam Auth */}
         <button
-          onClick={() => window.location.href = 'http://localhost:5000/auth/steam'}
+          onClick={() => window.location.href = '/auth/steam'}
           className="w-full h-[40px] flex items-center justify-center gap-3 rounded-xl border border-white/[0.07] bg-[#1b2838] hover:bg-[#2a475e] hover:border-white/20 transition-all duration-300 group shadow-lg shadow-black/20"
         >
           <div className="flex items-center gap-2.5 px-4">
